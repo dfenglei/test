@@ -1,0 +1,232 @@
+#encoding=utf-8
+
+# 打开sqlite3内存数据库，执行操作，将内存数据库保存到文件
+
+import sqlite3
+import StringIO
+
+#使用:memory:标识打开的是内存数据库
+con = sqlite3.connect(":memory:")
+cur = con.cursor()
+#使用executescript可以执行多个脚本
+cur.executescript("""
+    create table quotes(
+        rid INTEGER PRIMARY KEY AUTOINCREMENT,
+        code char(10) NOT NULL,
+        high real,
+        open real,
+        low real,
+        close real,
+        amount real,
+        volume real)""")
+
+
+#execute执行脚本，参数要放到元组中
+cur.execute('insert into quotes(code,high,open,low,close,amount,volume) values(?,?,?,?,?,?,?)',
+            ('600036',12.0,11.8,11.7,11.9,999999,8999))
+
+#打印数据表数据
+cur.execute("select * from quotes")
+print cur.fetchall()
+
+#生成内存数据库脚本
+str_buffer = StringIO.StringIO()
+#con.itrdump() dump all sqls 
+for line in con.iterdump():
+    str_buffer.write('%s\n' % line)
+
+#关闭内存数据库
+cur.close()
+
+
+#打开文件数据库
+con_file = sqlite3.connect('quotes.db3')
+cur_file = con_file.cursor()
+#执行内存数据库脚本
+cur_file.executescript(str_buffer.getvalue())
+#关闭文件数据库
+cur_file.close()
+
+
+ 12
+down vote
+accepted
+	
+
+If you set detect_types=sqlite3.PARSE_DECLTYPES in sqlite3.connect, then the connection will try to convert sqlite data types to Python data types when you draw data out of the database.
+
+This is a very good thing since its much nicer to work with datetime objects than random date-like strings which you then have to parse with datetime.datetime.strptime or dateutil.parser.parse.
+
+Unfortunately, using detect_types does not stop sqlite from accepting strings as DATE data, but you will get an error when you try to draw the data out of the database (if it was inserted in some format other than YYYY-MM-DD) because the connection will fail to convert it to a datetime.date object:
+
+conn=sqlite3.connect(':memory:',detect_types=sqlite3.PARSE_DECLTYPES) 
+cur=conn.cursor()
+cur.execute('CREATE TABLE foo(bar DATE)')
+# Unfortunately, this is still accepted by sqlite
+cur.execute("INSERT INTO foo(bar) VALUES (?)",('25/06/2003',))
+
+# But you won't be able to draw the data out later because parsing will fail
+try:
+    cur.execute("SELECT * FROM foo")
+except ValueError as err:
+    print(err)
+    # invalid literal for int() with base 10: '25/06/2003'
+    conn.rollback()
+
+But at least the error will alert you to the fact that you've inserted a string for a DATE when you really should be inserting datetime.date objects:
+
+cur.execute("INSERT INTO foo(bar) VALUES (?)",(datetime.date(2003,6,25),))
+cur.execute("SELECT ALL * FROM foo")
+data=cur.fetchall()
+data=zip(*data)[0]
+print(data)
+# (datetime.date(2003, 6, 25),)
+
+You may also insert strings as DATE data as long as you use the YYYY-MM-DD format. Notice that although you inserted a string, it comes back out as a datetime.date object:
+
+cur.execute("INSERT INTO foo(bar) VALUES (?)",('2003-06-25',))
+cur.execute("SELECT ALL * FROM foo")
+data=cur.fetchall()
+data=zip(*data)[0]
+print(data)
+# (datetime.date(2003, 6, 25), datetime.date(2003, 6, 25))
+
+So if you are disciplined about inserting only datetime.date objects into the DATE field, then you'll have no problems later when drawing the data out.
+
+If your users are input-ing date data in various formats, check out dateutil.parser.parse. It may be able to help you convert those various strings into datetime.datetime objects.
+
+
+http://www.numericalexpert.com/blog/sqlite_blob_time/sqlite_time_etc.html
+
+In [1]:
+
+import sqlite3
+from datetime import datetime, date
+
+In [2]:
+
+conn = sqlite3.connect("person_db.sqlite",detect_types=sqlite3.PARSE_DECLTYPES) 
+conn.execute("CREATE TABLE person (id integer primary key, firstname text, lastname text, dob date)")
+
+Out[2]:
+
+<sqlite3.Cursor at 0x54351a0>
+
+he TIMESTAMP field accepts a sring in ISO 8601 format 'YYYY-MM-DD HH:MM:SS.mmmmmm' or datetime.datetime object:
+In [3]:
+
+conn.execute("INSERT INTO person(firstname, lastname, dob) values (?, ?, ?)", ("Joe","Doe","2003-06-25"))
+d = date(1723,06,05)
+conn.execute("INSERT INTO person(firstname, lastname, dob) values (?, ?, ?)", ("Adam","Smith", d))
+conn.commit()
+cur = conn.cursor()
+cur.execute("SELECT * FROM person")
+print cur.fetchone()
+print cur.fetchone()
+conn.close()
+
+(1, u'Joe', u'Doe', datetime.date(2003, 6, 25))
+(2, u'Adam', u'Smith', datetime.date(1723, 6, 5))
+
+In [4]:
+
+conn = sqlite3.connect("log_db.sqlite",detect_types=sqlite3.PARSE_DECLTYPES) 
+conn.execute("CREATE TABLE logs (id integer primary key, message text, [timestamp] timestamp)")
+
+Out[4]:
+
+<sqlite3.Cursor at 0x54353e0>
+
+The TIMESTAMP field accepts a sring in ISO 8601 format 'YYYY-MM-DD HH:MM:SS.mmmmmm' or datetime.datetime object:
+In [5]:
+
+conn.execute("INSERT INTO logs(message, timestamp) values (?, ?)", ("message: error",'2012-12-25 23:59:59'))
+conn.execute("INSERT INTO logs(message, timestamp) values (?, ?)", ("message: ok", datetime.now()))
+conn.commit()
+cur = conn.cursor()
+cur.execute("SELECT * FROM logs")
+print cur.fetchone()
+print cur.fetchone()
+conn.close()
+
+(1, u'message: error', datetime.datetime(2012, 12, 25, 23, 59, 59))
+(2, u'message: ok', datetime.datetime(2014, 1, 5, 16, 52, 57, 523000))
+
+Storing and retrieving custom types
+In [6]:
+
+from decimal import Decimal
+
+The adapter accepts as single parameter the Python value, and must return a value of the following types: int, long, float, str or buffer.
+In [7]:
+
+def decimal2float(val):
+    return float(str(val))
+sqlite3.register_adapter(Decimal, decimal2float)
+
+In [8]:
+
+conn = sqlite3.connect(":memory:",detect_types=sqlite3.PARSE_DECLTYPES) 
+conn.execute("CREATE TABLE numbers (number decimal)")
+conn.execute("INSERT INTO numbers(number) values (?)", (Decimal('123.456789'),))
+conn.commit()
+cur = conn.cursor()
+cur.execute("SELECT * FROM numbers")
+print cur.fetchone()
+conn.close()
+
+(123.456789,)
+
+To retrieve numbers as a Decimal, we have to implement and register a converter.
+In [9]:
+
+def float2decimal(val):
+    return Decimal(str(val))
+sqlite3.register_converter("decimal", float2decimal)
+
+In [10]:
+
+conn = sqlite3.connect(":memory:",detect_types=sqlite3.PARSE_DECLTYPES) 
+conn.execute("CREATE TABLE numbers (number decimal)")
+conn.execute("INSERT INTO numbers(number) values (?)", (Decimal('123.456789'),))
+conn.commit()
+cur = conn.cursor()
+cur.execute("SELECT * FROM numbers")
+print cur.fetchone()
+conn.close()
+
+(Decimal('123.456789'),)
+
+Accessing columns by name
+In [11]:
+
+conn = sqlite3.connect("person_db.sqlite",detect_types=sqlite3.PARSE_DECLTYPES)
+conn.row_factory = sqlite3.Row
+cur = conn.cursor()
+cur.execute("SELECT * FROM person where id=6")
+for row in cur:
+    print row['firstname']
+    print 'DoB:', row['dob']
+conn.close()
+
+Using the connection as a context manager
+In [12]:
+
+# example from http://docs.python.org/2.7/library/sqlite3.html
+con = sqlite3.connect(":memory:")
+con.execute("create table person (id integer primary key, firstname varchar unique)")
+
+# Successful, con.commit() is called automatically afterwards
+with con:
+    con.execute("insert into person(firstname) values (?)", ("Joe",))
+
+# con.rollback() is called after the with block finishes with an exception, the
+# exception is still raised and must be caught
+try:
+    with con:
+        con.execute("insert into person(firstname) values (?)", ("Joe",))
+except sqlite3.IntegrityError:
+    print "couldn't add Joe twice"
+
+couldn't add Joe twice
+
