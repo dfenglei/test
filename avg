@@ -50,3 +50,19 @@ cur_file = con_file.cursor()
 cur_file.executescript(str_buffer.getvalue())
 #关闭文件数据库
 cur_file.close()
+
+Reading the docs from http://docs.python.org/py3k/library/sched.html:
+
+Going from that we need to work out a delay (in seconds)...
+
+from datetime import datetime
+now = datetime.now()
+Then use datetime.strptime to parse '2012-07-17 15:50:00' (I'll leave the format string to you)
+
+# I'm just creating a datetime in 3 hours... (you'd use output from above)
+from datetime import timedelta
+run_at = now + timedelta(hours=3)
+delay = (run_at - now).total_seconds()
+You can then use delay to pass into a  threading.Timer instance, eg:
+
+threading.Timer(delay, self.update).start()
